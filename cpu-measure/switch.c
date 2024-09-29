@@ -3,16 +3,8 @@
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <unistd.h>
 #include <sched.h>
-
-uint64_t rdtsc()
-{
-	unsigned int low, high;
-	_asm_ volatile ("rdtsc" : "=a" (low), "=d" (high));
-	return ((uint64_t)high << 32 | low);
-}
 
 int main()
 {
@@ -24,35 +16,46 @@ int main()
 
 	pid_t pid;	
 	int fd1[2], fd2[2];
-	char buf1[20], buf2[20];
 	if (pipe(fd1) < 0 || pipe(fd2) < 0) {  // creating two pairs of pipe
 		printf("Error when creating pipe\n");
 		exit(1);
 	}
-	
+
+	struct timeval start, end;
+	int N = 10000;
+
+	if (sched_setaffinity(0, sizeof(cpu_set_t), &set) < 0) { // bind parent process to cpu 1
+		printf("Error when dedicate a process\n");
+		exit(1);
+	}
+
 	pid = fork();
 	if (pid < 0) {
 		printf("Error when fork a process\n");
 	} else if (pid == 0) {  // child process 
-		if (sched_setaffinity(0, sizeof(cpu_set_t), &set) < 0)  // bind child process to cpu 1
-			printf("Error when dedicate a process\n");
+		char buf = '0';  // each process has own buf to avoid data confliction
 		close(fd1[1]);
 		close(fd2[0]);
-
-		uint64_t start_time = rdtsc();
-
-		read(fd1[0], buf1, 10);
-		write(fd2[1], buf2, 10);
-	} else {  // parent process
-		if (sched_setaffinity(0, sizeof(cpu_set_t), &set) < 0)  // bind parent process to cpu 1
-			printf("Error when dedicate a process\n");
+		for (int i = 0; i < N; ++i) {
+			read(fd1[0], &buf, 1);
+			write(fd2[1], &buf, 1);
+		}
 		close(fd1[0]);
 		close(fd2[1]);
-		write(fd1[1], buf2, 10);
-		read(fd2[0], buf1, 10);
-
-		uint64_t end_time = rdtsc();
+	} else {  // parent process
+		char buf = '0';
+		close(fd1[0]);
+		close(fd2[1]);
+		gettimeofday(&start, NULL);
+		for (int i = 0; i < N; ++i) {
+			write(fd1[1], &buf, 1);
+			read(fd2[0], &buf, 1);
+		}
+		gettimeofday(&end, NULL);
+		printf("context switch: %f microseconds\n", (float)(end.tv_sec * 1000000 + end.tv_usec - start.tv_sec * 1000000 - start.tv_usec) / N / 2);
+		wait(NULL);
+		close(fd1[1]);
+		close(fd2[0]);
+		exit(0);
 	}
-
-	printf("The time spended is %lu\n", start_time - end_time);
 }
